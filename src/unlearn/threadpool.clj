@@ -10,7 +10,7 @@
     (^void uncaughtException [_ ^Thread t ^Throwable ex]
       (log/error ex "Uncaught exception on" (.getName t)))))
 
-(defn set-global-uncaught-exception-handler! []
+(defn set-default-global-uncaught-exception-handler! []
   (Thread/setDefaultUncaughtExceptionHandler global-uncaught-exception-handler))
 
 (defn make-virtual-thread-factory
@@ -75,7 +75,7 @@
      (.setDaemon daemon?))))
 
 
-(defn set-core-agent-executors!
+(defn set-unbounded-core-agent-executors!
   "Overrides the clojure.core agent executors to use the `base-executor`."
   []
   (let [executor (make-unbounded-executor)]
