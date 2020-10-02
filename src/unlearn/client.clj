@@ -1,11 +1,11 @@
 (ns unlearn.client
   (:require [clojure.string :as s]
             [java-http-clj.core :as http]
-            [unlearn.threadpool :as tp])
+            [unlearn.virtual.executor :as executor])
   (:import (java.util.concurrent Executors)
            (java.util.concurrent CompletableFuture ExecutorService)))
 
-(def virtual-executor (tp/make-unbounded-executor))
+(def virtual-executor (executor/executor))
 (def workstealing-executor (Executors/newWorkStealingPool))
 
 (def vclient (http/build-client {:follow-redirects :always
@@ -54,7 +54,7 @@
 (defn vmap
   "Like pmap, but using virtual threads"
   [f coll]
-  (with-open [^ExecutorService e (tp/make-unbounded-executor)]
+  (with-open [^ExecutorService e (executor/executor)]
     (let [tasks (into [] (map (fn [el] (^:once fn [] (f el))) coll))
           tasks (.submitTasks e tasks)]
       (->> (CompletableFuture/stream tasks)

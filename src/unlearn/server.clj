@@ -1,6 +1,6 @@
 (ns unlearn.server
   (:require [ring.adapter.jetty9 :refer [run-jetty]]
-            [unlearn.threadpool :as threadpool]))
+            [unlearn.virtual.executor :as executor]))
 
 (defn- handler [request]
   {:status 200
@@ -11,13 +11,13 @@
   (run-jetty #'handler {:port 8080
                         :join? false
                         :max-threads 1
-                        :thread-pool (threadpool/make-unbounded-thread-pool)}))
+                        :thread-pool (executor/thread-pool)}))
 
 (defn start-loom-queued []
   (run-jetty #'handler {:port 8081
                         :join? false
                         :max-threads 1
-                        :thread-pool (threadpool/make-queued-thread-pool)}))
+                        :thread-pool (executor/queued-thread-pool)}))
 
 (defn start-plain []
   (run-jetty #'handler {:port 8082
@@ -25,9 +25,9 @@
                         :max-threads 10}))
 
 (comment
-  (threadpool/set-core-agent-executors!)
-  (threadpool/set-global-uncaught-exception-handler!)
-  ;; wrk -t12 -c400 -d30s http://127.0.0.1:8080
+  (executor/set-core-agent-executors-virtual!)
+  (executor/set-default-uncaught-exception-handler!)
+  ;; wrk -t12 -c400 -d30s http://127.0.0.1:808{0,1,2}
   (def loom (start-loom))
   (def loomq (start-loom-queued))
   (def plain (start-plain))

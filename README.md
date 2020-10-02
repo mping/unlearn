@@ -1,7 +1,7 @@
 # unlearn
 
 Project Loom experimentations.
-You need OpenJDK 15 to run: https://wiki.openjdk.java.net/display/loom/Main
+You need OpenJDK 16 to run: https://wiki.openjdk.java.net/display/loom/Main
 
 ## Server
 
