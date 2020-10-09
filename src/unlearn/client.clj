@@ -57,7 +57,7 @@
   (with-open [^ExecutorService e (executor/executor)]
     (let [tasks (into [] (map (fn [el] (^:once fn [] (f el))) coll))
           tasks (.submitTasks e tasks)]
-      (->> (CompletableFuture/stream tasks)
+      (->> (CompletableFuture/completed tasks)
            (.iterator)
            (iterator-seq)
            (map #(.join %))))))
@@ -91,7 +91,8 @@
 
   (time
     (let [total 200]
-      (count (vpar #(do (Thread/sleep 1000) %) (range total))))))
+      (count (pmap #(do (Thread/sleep 1000) %) (range total)))))
+  "end")
 
 
 

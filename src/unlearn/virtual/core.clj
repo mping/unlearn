@@ -1,7 +1,9 @@
 (ns unlearn.virtual.core
   (:refer-clojure :exclude [pmap])
-  (:require [unlearn.virtual.executor :as executor])
+  (:require [unlearn.virtual.executor :as executor]
+            [manifold.deferred])
   (:import (java.util.concurrent ExecutorService CompletableFuture)
+           (java.time Instant)
            (java.util Collection)))
 
 ;;;;
@@ -37,23 +39,30 @@
   "Runs each form within its own virtual thread."
   [^ExecutorService ex & body]
   `(let [tasks# ~(tasks-of body)]
-     (with-open [^ExecutorService e# ~ex]
+     (with-open [^ExecutorService e# ~ex] ;; remember, in loom ExecutorService implements AutoCloseable
        (let [submitted# (.submitTasks e# tasks#)]
          (tasks->join submitted#)))))
 
-(defmacro with-execute [& body]
-  `(with-executor (executor/executor) ~@body))
+(defmacro fut [& body]
+  `(first (with-executor (executor/executor) ~@body)))
 
+
+(time
+  (let [a (fut (do (Thread/sleep 500) 1))
+        b (fut (do (Thread/sleep 500) 2))]
+    (+ a b)))
 
 (comment
-  ;; runs each (Thread/currentThread) in a vthread
-  (with-executor (executor/executor)
-    (Thread/currentThread)
-    (Thread/currentThread))
+  ;; runs each form in a vthread
+  (time
+   (with-executor (executor/executor {:deadline (.. (Instant/now) (plusSeconds 1))})
+     (do (Thread/sleep 1000) 500)
+     (do (Thread/sleep 50) 50)))
 
   ;; crazy: destructure
   (let [[r1 r2] (with-execute (+ 1 1) (+ 2 2))]
     (+ r1 r2))
+
 
   ;; parallel map
   (pmap (fn [_] (Thread/sleep 1000)) (take 1e3 (range)))) nil

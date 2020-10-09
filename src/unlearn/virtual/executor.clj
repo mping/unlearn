@@ -10,23 +10,33 @@
   "Makes a virtual thread factory"
   ([]
    (thread-factory nil))
-  ([{:keys [name exception-handler ^ExecutorService scheduler]
-     :or   {name              "unlearn.virtual"
+  ([{:keys [prefix exception-handler ^ExecutorService scheduler]
+     :or   {prefix            "unlearn.virtual"
             exception-handler global-uncaught-exception-handler}}]
    (let [builder (Thread/builder)]
      (-> (if scheduler
            (.virtual builder scheduler)
            (.virtual builder))
-         (.name name 0)
+         (.name prefix 0)
          (.uncaughtExceptionHandler exception-handler)
          (.factory)))))
 
 (defn executor
   ([] (executor nil))
-  ([^ExecutorService scheduler] (executor scheduler nil))
-  ([^ExecutorService scheduler ^Instant deadline]
-   (let [exec (Executors/newThreadExecutor (thread-factory {:scheduler scheduler}))]
-     (cond-> exec (some? deadline) (.withDeadline deadline)))))
+  ([{:keys [^ExecutorService scheduler
+            ^Instant deadline
+            prefix
+            exception-handler] :as opts}]
+   (let [ex (Executors/newThreadExecutor (thread-factory opts))]
+     (cond-> ex (some? deadline) (.withDeadline deadline)))))
+
+(defn virtual-executor
+  ([]
+   (virtual-executor nil))
+  ([^Instant deadline]
+   (cond-> (Executors/newVirtualThreadExecutor)
+     deadline (.withDeadline deadline))))
+
 
 (defn thread-pool
   "Makes an unbounded thread pool backed by a virtual thread factory"
