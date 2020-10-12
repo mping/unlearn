@@ -17,7 +17,17 @@
   (let [[vars sexprs] (apply map list binding-pairs)]
     vars))
 
-(defn- bindings->tasks [binding-pairs]
+(defn- bindings->nested-tasks
+  "Returns a list of `Function` that will be sequentially run with the previous function's result.
+  (bindings-nested-tasks '(a 1
+                           b (+ 2 a)
+                           c (+ a b))
+  In pseudocode:
+  [(fn [] [1])
+   (fn [[a]] (+ 2 a)
+   (fn [[a b]] (+ a b)]
+  "
+  [binding-pairs]
   (let [vars (vars-of binding-pairs)]
     (->> (map-indexed (fn [i [v sexpr]]
                         (let [first? (= i 0)
@@ -43,15 +53,16 @@
   (let [ex            (gensym)
         b             (gensym)
         binding-pairs (partition 2 (concat bindings [b body]))
-        task-fns      (bindings->tasks binding-pairs)]
+        task-fns      (bindings->nested-tasks binding-pairs)]
 
     `(let [~(with-meta ex {:tag `ExecutorService}) (executor/executor)]
        (try
+         ;; effectively a kind of reduce
          @(.. (CompletableFuture/completedFuture nil)
               ~@(for [f task-fns]
                   `(~'thenApplyAsync ~(with-meta f {:tag Function}) ~ex)))
          (finally
-           (.close ~(with-meta ex {:tag `AutoCloseable})))))))
+           (.close ~ex))))))
 
 (clojure.pprint/pprint
   (macroexpand-1

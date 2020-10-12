@@ -1,6 +1,6 @@
 (ns unlearn.virtual.executor
   (:require [clojure.tools.logging :as log])
-  (:import (java.util.concurrent TimeUnit ExecutorService Executors CompletableFuture)
+  (:import (java.util.concurrent TimeUnit ExecutorService Executors)
            (org.eclipse.jetty.util.component AbstractLifeCycle)
            (org.eclipse.jetty.util.thread ThreadPool QueuedThreadPool)
            (java.time Instant)))
@@ -37,13 +37,22 @@
    (cond-> (Executors/newVirtualThreadExecutor)
      deadline (.withDeadline deadline))))
 
+(defn periodically
+  [f interval]
+  (doto (Thread.
+          #(try
+             (while (not (.isInterrupted (Thread/currentThread)))
+               (Thread/sleep interval)
+               (f))
+             (catch InterruptedException _)))
+    (.start)))
 
 (defn thread-pool
   "Makes an unbounded thread pool backed by a virtual thread factory"
   ([]
    (thread-pool nil))
-  ([{:keys [stop-timeout stop-units] :or {stop-timeout 60 stop-units TimeUnit/SECONDS}}]
-   (let [executor ^ExecutorService (executor)
+  ([{:keys [stop-timeout stop-units] :or {stop-timeout 60000 stop-units TimeUnit/MILLISECONDS}}]
+   (let [executor ^ExecutorService (executor {:prefix "virtual"})
          lock     (Object.)]
      (proxy
        [AbstractLifeCycle ThreadPool]
