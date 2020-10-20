@@ -9,7 +9,12 @@
                  [java-http-clj "0.4.1"]
                  [ring/ring-core "1.6.3"]
                  [info.sunng/ring-jetty9-adapter "0.12.8"]
-                 [riddley "0.2.0"]
+
+                 ;;
+                 [org.clojure/java.jdbc "0.7.11"]
+                 [mysql/mysql-connector-java "8.0.22"]
+                 [aleph "0.4.7-alpha5"]
+
                  ;; for comparison
                  [criterium "0.4.6"]
                  [manifold "0.1.9-alpha3"]]

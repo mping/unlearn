@@ -1,0 +1,31 @@
+version: '3.5'
+
+services:
+
+  minio:
+    network_mode: host
+    image: minio/minio
+    volumes:
+      - ./minio:/data
+    ports:
+      - 9000:9000
+    environment:
+      MINIO_ACCESS_KEY: testtest
+      MINIO_SECRET_KEY: testtest
+      MINIO_REGION_NAME: local
+      MINIO_HTTP_TRACE: /dev/stdout
+    command: server /data
+
+  mysql:
+    image: mysql:8.0
+    network_mode: host
+    volumes:
+      - /tmp/docker/volume_orchestrator/mysql:/var/lib/mysql
+      - ./mysql:/docker-entrypoint-initdb.d
+    ports:
+      - 3306:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: test
+      MYSQL_USER:     test
+      MYSQL_PASSWORD: test
