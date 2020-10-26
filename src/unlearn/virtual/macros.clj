@@ -1,111 +1,189 @@
 (ns unlearn.virtual.macros
-  (:require [riddley.compiler :as compiler]
-            [riddley.walk :as walk]
-            [clojure.set :as set]
+  (:require [clojure.set :as set]
             [unlearn.virtual.executor :as executor]
+            [riddley.walk :as walk]
+            [riddley.compiler :as compiler]
             [manifold.deferred :as d]
             [criterium.core :as cc])
-  (:import (java.util.concurrent ExecutorService CompletableFuture)
-           (java.util.function Function Supplier)
-           (java.lang AutoCloseable)))
-
-(defmacro task [& body]
-  ;; todo submit to executor
-  `(fn [] ~@body))
-
-(defn- vars-of [binding-pairs]
-  (let [[vars sexprs] (apply map list binding-pairs)]
-    vars))
-
-(defn- bindings->nested-tasks
-  "Returns a list of `Function` that will be sequentially run with the previous function's result.
-  (bindings-nested-tasks '(a 1
-                           b (+ 2 a)
-                           c (+ a b))
-  In pseudocode:
-  [(fn [] [1])
-   (fn [[a]] (+ 2 a)
-   (fn [[a b]] (+ a b)]
-  "
-  [binding-pairs]
-  (let [vars (vars-of binding-pairs)]
-    (->> (map-indexed (fn [i [v sexpr]]
-                        (let [first? (= i 0)
-                              last?  (= i (dec (count binding-pairs)))
-                              fargs  (if first?
-                                       '_
-                                       (into [] (take i vars)))
-                              fbody  (if last? sexpr (into [] (concat (take i vars) [sexpr])))]
-
-                          `[(reify Function
-                              (~'java.util.function.Function/apply [~'this ~fargs] ~fbody))]))
-
-                      binding-pairs)
-         (apply concat)
-         (into []))))
-
-(defmacro ^:private sequentially
-  "Runs each task sequentially, binding each task to a var, similar to `let`.
-  A task can be a value or the result of `(task ...)`.
-  Each task can depend on a previous value"
-  {:forms '[(sequentially [tasks*] exprs*)]}
-  [bindings body]
-  (let [ex            (gensym)
-        b             (gensym)
-        binding-pairs (partition 2 (concat bindings [b body]))
-        task-fns      (bindings->nested-tasks binding-pairs)]
-
-    `(let [~(with-meta ex {:tag `ExecutorService}) (executor/executor)]
-       (try
-         ;; effectively a kind of reduce
-         @(.. (CompletableFuture/completedFuture nil)
-              ~@(for [f task-fns]
-                  `(~'thenApplyAsync ~(with-meta f {:tag Function}) ~ex)))
-         (finally
-           (.close ~ex))))))
-
-(clojure.pprint/pprint
-  (macroexpand-1
-    '(sequentially [a 1
-                    b (+ a 1)
-                    c (+ b a)]
-       (+ a b c))))
-
-(sequentially [a 1
-               b (+ a 1)
-               c (+ b a)]
-  (+ a b c))
+  (:import (java.util.concurrent ExecutorService)
+           (clojure.lang Fn)))
 
 
-(comment
-  (set! *warn-on-reflection* true)
-  (set! *print-meta* true)
-  (cc/bench @(d/let-flow [a (d/future 1)
-                          b (d/future (+ a 1))
-                          c (d/future (+ a b))]
-               (+ a b c)))
+(defn whom-am-i []
+  (str (.getName (Thread/currentThread))))
 
-  ;Evaluation count : 3183720 in 60 samples of 53062 calls.
-  ;Execution time mean : 18,571357 µs
-  ;Execution time std-deviation : 1,314774 µs
-  ;Execution time lower quantile : 17,121132 µs ( 2,5%)
-  ;Execution time upper quantile : 21,454793 µs (97,5%)
-  ;Overhead used : 4,146448 ns
+;;;;
+;; public stuff
 
-  (cc/bench (sequentially [a 1
-                           b (+ a 1)
-                           c (+ b a)]
-              (+ a b c))))
-;
-;Evaluation count : 2092920 in 60 samples of 34882 calls.
-;Execution time mean : 30,245814 µs
-;Execution time std-deviation : 3,084815 µs
-;Execution time lower quantile : 24,993762 µs ( 2,5%)
-;Execution time upper quantile : 34,435957 µs (97,5%)
-;Overhead used : 4,146448 ns
+(defprotocol ITask (run-task [this]))
+
+(extend-protocol ITask
+  ;; sets, maps and keywords implement ifn? which means they would be
+  ;; treated as tasks but they always need an argument
+  Fn (run-task [f] (f))
+  Object (run-task [f] f)
+  nil (run-task [_] nil))
 
 
-(comment
-  (parallel [a 1
-             b 2
-             c 3]))
+(defmacro task=> [& body]
+  "Creates a task out of a body"
+  ;; memoization allows a task to be called several times and just like a deferred,
+  ;; only return the success value
+  `(memoize (fn ^:once [] ~@body)))
+
+
+;;;;
+;; macro helpers
+
+(defn- tasks-of
+  "Helper fn for `with-executor` macro"
+  [bindings]
+  (mapv (fn [binding] `(^:once fn [] (run-task ~binding)))
+        bindings))
+
+(defn- split-tasks-opts
+  ([body]
+   (split-tasks-opts body {}))
+  ([body curr-opts]
+   (let [deadline? (= ::executor/deadline (first body))
+         deadline  (when deadline? (nth body 1))
+         executor? (= ::executor/executor (first body))
+         executor  (when executor? (nth body 1))
+
+         ex-opts   (cond-> curr-opts
+                           deadline? (merge {:deadline deadline})
+                           executor? (merge {:executor executor}))
+         tasks     (if (or deadline? executor?)
+                     (rest (rest body))
+                     body)]
+     (if (not (or deadline? executor?))
+       [tasks (merge curr-opts ex-opts)]
+       (split-tasks-opts tasks ex-opts)))))
+
+;(split-tasks-opts '(::executor/executor 2  ::executor/deadline 1 (+ 1 1)))
+
+(defmacro all
+  "Runs each form within its own virtual thread."
+  ([& body]
+   (let [[tasks ex-opts] (split-tasks-opts body)]
+     `(let [tasks# ~(tasks-of tasks)]
+        (with-open [^ExecutorService e# (executor/executor ~ex-opts)]
+          (->> (.invokeAll e# tasks#)
+               (mapv #(.get %))))))))
+
+(defmacro any
+  "Runs each form within its own virtual thread, returning the first to finish"
+  ([& body]
+   (let [[tasks ex-opts] (split-tasks-opts body)]
+     `(let [tasks# ~(tasks-of tasks)]
+        (with-open [^ExecutorService e# (executor/executor ~ex-opts)]
+          (.invokeAny e# tasks#))))))
+
+(defmacro task
+  "Runs a single form in its own virtual thread."
+  [& body]
+  (let [[task ex-opts] (split-tasks-opts body)]
+    `(with-open [^ExecutorService e# (executor/executor ~ex-opts)]
+       @(.submitTask e# (cast Callable (^:once fn [] (run-task ~@task)))))))
+
+(defn whoami []
+  (let [n (.getName (Thread/currentThread))]
+    (println n)
+    n))
+
+#_(all
+    (fn [] (whoami) :first)
+    (do :second)
+    (task (whoami))
+    (task nil)
+    (do :do)
+    (task=> (whoami) (+ 1 2)))
+
+
+
+;; shamelessly copied from manifold.deferred/back-references
+(defn- back-references [marker form]
+  (let [syms (atom #{})]
+    (walk/walk-exprs
+      symbol?
+      (fn [s]
+        (when (some-> (compiler/locals) (find s) key meta (get marker))
+          (swap! syms conj s)))
+      form)
+    @syms))
+
+
+;; shamelessly copied from manifold.deferred/expand-let-flow
+(defn- expand-let-flow [bindings orig-body]
+  (let [[body ex-opts] orig-body
+        [_ bindings & body] (walk/macroexpand-all `(let ~bindings ~@body))
+        locals       (keys (compiler/locals))
+        vars         (->> bindings (partition 2) (map first))
+        custom-ex    (gensym "custom-executor")
+        marker       (gensym)
+        vars'        (->> vars (concat locals) (map #(vary-meta % assoc marker true)))
+        gensyms      (repeatedly (count vars') gensym)
+        gensym->var  (zipmap gensyms vars')
+        vals'        (->> bindings (partition 2) (map second) (concat locals))
+        gensym->deps (zipmap
+                       gensyms
+                       (->> (count vars')
+                            range
+                            (map
+                              (fn [n]
+                                `(let [~@(interleave (take n vars') (repeat nil))
+                                       ~(nth vars' n) ~(nth vals' n)])))
+                            (map
+                              (fn [n form]
+                                (map
+                                  (zipmap vars' (take n gensyms))
+                                  (back-references marker form)))
+                              (range))))
+        binding-dep? (->> gensym->deps vals (apply concat) set)
+
+        body-dep?    (->> `(let [~@(interleave
+                                     vars'
+                                     (repeat nil))]
+                             ~@body)
+                          (back-references marker)
+                          (map (zipmap vars' gensyms))
+                          (concat (drop (count vars) gensyms))
+                          set)
+        dep?         (set/union binding-dep? body-dep?)]
+    `(let [~custom-ex (executor/executor ~ex-opts)]          ;; TODO receive opts
+       (let [~@(mapcat
+                 (fn [n var val gensym]
+                   (let [deps (gensym->deps gensym)]
+                     (if (empty? deps)
+                       (when (dep? gensym)
+                         [gensym val])
+                       [gensym
+                        `(->> [(all ~@deps :executor ~custom-ex)]
+                              (apply (fn [[~@(map gensym->var deps)]]
+                                       ~val)))])))
+                 (range)
+                 vars'
+                 vals'
+                 gensyms)]
+         (->> [(all ~@body-dep? :executor ~custom-ex)]
+              (apply (fn [[~@(map gensym->var body-dep?)]]
+                       ~@body)))))))
+
+(defmacro dag
+  "Constructs a DAG of let-bindings and executes it"
+  [bindings & body]
+  (expand-let-flow
+    bindings
+    body))
+
+
+(time
+  (dag [a (task=> (Thread/sleep 100) (+ 1 1))
+        b (do     (Thread/sleep 100) 2)
+        c (task=> (println "c" (whom-am-i)) (+ 1 a))]
+       (+ a b b)))
+
+(walk/macroexpand '(dag [a (task=> (Thread/sleep 100) (+ 1 1))
+                         b (do  (Thread/sleep 100) 2)
+                         c (task=> (println "c" (whom-am-i)) (+ 1 a))]
+                        (+ a b)))

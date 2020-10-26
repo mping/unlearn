@@ -23,11 +23,12 @@
 
 (defn pmap
   "Like pmap, but using virtual threads"
-  [f coll]
-  (with-open [^ExecutorService e (executor/executor)]
+  [f coll {:keys [deadline] :as opts}]
+  (with-open [^ExecutorService e (executor/executor (when deadline {:deadline deadline}))]
     (let [tasks (into [] (map (fn [el] (^:once fn [] (f el))) coll))
           tasks (.submitTasks e tasks)]
       (tasks->join tasks))))
+
 
 (defn- tasks-of
   "Helper fn for `with-executor` macro"
@@ -35,34 +36,69 @@
   (mapv (fn [binding] `(^:once fn [] ~binding))
         bindings))
 
-(defmacro with-executor
+(defn- split-tasks-opts [body]
+  (let [deadline? (= :deadline (first body))
+        deadline  (when deadline? (nth body 1))
+        ex-opts   (when deadline? {:deadline deadline})
+        tasks     (if deadline? (rest (rest body)) body)]
+    [tasks ex-opts]))
+
+(defmacro all
   "Runs each form within its own virtual thread."
-  [^ExecutorService ex & body]
-  `(let [tasks# ~(tasks-of body)]
-     (with-open [^ExecutorService e# ~ex] ;; remember, in loom ExecutorService implements AutoCloseable
-       (let [submitted# (.submitTasks e# tasks#)]
-         (tasks->join submitted#)))))
+  ([& body]
+   (let [[tasks ex-opts] (split-tasks-opts body)]
+     `(let [tasks# ~(tasks-of tasks)]
+        (with-open [^ExecutorService e# (executor/executor ~ex-opts)]
+          (->> (.invokeAll e# tasks#)
+               (mapv #(.get %))))))))
 
-(defmacro fut [& body]
-  `(first (with-executor (executor/executor) ~@body)))
+(defmacro any
+  "Runs each form within its own virtual thread, returning the first to finish"
+  ([& body]
+   (let [[tasks ex-opts] (split-tasks-opts body)]
+     `(let [tasks# ~(tasks-of tasks)]
+        (with-open [^ExecutorService e# (executor/executor ~ex-opts)]
+          (.invokeAny e# tasks#))))))
 
+(defmacro single
+  "Runs a single form in its own virtual thread."
+  [& body]
+  (let [[task ex-opts] (split-tasks-opts body)]
+    `(with-open [^ExecutorService e# (executor/executor ~ex-opts)]
+       @(.submitTask e# (cast Callable (^:once fn [] (do ~@task)))))))
 
-(time
-  (let [a (fut (do (Thread/sleep 500) 1))
-        b (fut (do (Thread/sleep 500) 2))]
-    (+ a b)))
 
 (comment
-  ;; runs each form in a vthread
+  ;; should be 100ms, but is 200ms - single is blocking call
   (time
-   (with-executor (executor/executor {:deadline (.. (Instant/now) (plusSeconds 1))})
-     (do (Thread/sleep 1000) 500)
-     (do (Thread/sleep 50) 50)))
+    (let [a (single (Thread/sleep 100) :100ms)
+          b (single (Thread/sleep 100) :100ms)]
+      [a b]))
 
-  ;; crazy: destructure
-  (let [[r1 r2] (with-execute (+ 1 1) (+ 2 2))]
-    (+ r1 r2))
+  ;; if they are independent, should be parallel
+  (time
+    (all
+      (do (Thread/sleep 100) :100ms)
+      (do (Thread/sleep 100) :100ms)))
 
+  ;; if they are dependent, should be nested
+  (time
+    (single
+      ;; the (single... call will block until a result is ready
+      (let [waiting-for (single (Thread/sleep 100) 1)]
+        (Thread/sleep 100)
+        (+ 1 waiting-for))))
 
-  ;; parallel map
-  (pmap (fn [_] (Thread/sleep 1000)) (take 1e3 (range)))) nil
+  ;; structured concurrency ;)
+  (time
+    (all
+      (single
+        (Thread/sleep 100) :100ms)
+      (any
+        (do (Thread/sleep 300) :300ms)
+        (do (Thread/sleep 400) :400ms))
+      (try
+        (single :deadline (.. (Instant/now) (plusSeconds 1))
+                (do (Thread/sleep 1500)
+                    :try))
+        (catch InterruptedException e :deadline-1000ms)))))
