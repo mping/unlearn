@@ -2,15 +2,9 @@
   (:require [clojure.set :as set]
             [unlearn.virtual.executor :as executor]
             [riddley.walk :as walk]
-            [riddley.compiler :as compiler]
-            [manifold.deferred :as d]
-            [criterium.core :as cc])
+            [riddley.compiler :as compiler])
   (:import (java.util.concurrent ExecutorService)
            (clojure.lang Fn)))
-
-
-(defn whom-am-i []
-  (str (.getName (Thread/currentThread))))
 
 ;;;;
 ;; public stuff
@@ -24,13 +18,12 @@
   Object (run-task [f] f)
   nil (run-task [_] nil))
 
-
-(defmacro task=> [& body]
+(defmacro task=>
   "Creates a task out of a body"
+  [& body]
   ;; memoization allows a task to be called several times and just like a deferred,
   ;; only return the success value
   `(memoize (fn ^:once [] ~@body)))
-
 
 ;;;;
 ;; macro helpers
@@ -60,46 +53,34 @@
        [tasks (merge curr-opts ex-opts)]
        (split-tasks-opts tasks ex-opts)))))
 
-;(split-tasks-opts '(::executor/executor 2  ::executor/deadline 1 (+ 1 1)))
+;; (split-tasks-opts '(::executor/executor 2  ::executor/deadline 1 (+ 1 1)))
+;; [((+ 1 1)) {:executor 2, :deadline 1}]
 
-(defmacro all
+(defmacro parallel
   "Runs each form within its own virtual thread."
   ([& body]
    (let [[tasks ex-opts] (split-tasks-opts body)]
      `(let [tasks# ~(tasks-of tasks)]
-        (with-open [^ExecutorService e# (executor/executor ~ex-opts)]
+        (with-open [^ExecutorService e# (executor/executor ~ex-opts)] ;; TODO use with-open
           (->> (.invokeAll e# tasks#)
                (mapv #(.get %))))))))
 
-(defmacro any
+(macroexpand-1 '(all ::executor/executor x (+ 1 1)))
+
+(defmacro race
   "Runs each form within its own virtual thread, returning the first to finish"
   ([& body]
    (let [[tasks ex-opts] (split-tasks-opts body)]
      `(let [tasks# ~(tasks-of tasks)]
-        (with-open [^ExecutorService e# (executor/executor ~ex-opts)]
+        (with-open [^ExecutorService e# (executor/executor ~ex-opts)] ;; TODO use with-open
           (.invokeAny e# tasks#))))))
 
 (defmacro task
   "Runs a single form in its own virtual thread."
   [& body]
   (let [[task ex-opts] (split-tasks-opts body)]
-    `(with-open [^ExecutorService e# (executor/executor ~ex-opts)]
+    `(with-open [^ExecutorService e# (executor/executor ~ex-opts)] ;; TODO use with-open
        @(.submitTask e# (cast Callable (^:once fn [] (run-task ~@task)))))))
-
-(defn whoami []
-  (let [n (.getName (Thread/currentThread))]
-    (println n)
-    n))
-
-#_(all
-    (fn [] (whoami) :first)
-    (do :second)
-    (task (whoami))
-    (task nil)
-    (do :do)
-    (task=> (whoami) (+ 1 2)))
-
-
 
 ;; shamelessly copied from manifold.deferred/back-references
 (defn- back-references [marker form]
@@ -116,7 +97,7 @@
 ;; shamelessly copied from manifold.deferred/expand-let-flow
 (defn- expand-let-flow [bindings orig-body]
   (let [[body ex-opts] orig-body
-        [_ bindings & body] (walk/macroexpand-all `(let ~bindings ~@body))
+        [_ bindings & body] (walk/macroexpand-all `(let ~bindings ~body))
         locals       (keys (compiler/locals))
         vars         (->> bindings (partition 2) (map first))
         custom-ex    (gensym "custom-executor")
@@ -150,40 +131,64 @@
                           (concat (drop (count vars) gensyms))
                           set)
         dep?         (set/union binding-dep? body-dep?)]
-    `(let [~custom-ex (executor/executor ~ex-opts)]          ;; TODO receive opts
+    `(with-open [~custom-ex (executor/executor ~ex-opts)]
        (let [~@(mapcat
                  (fn [n var val gensym]
+                   ;; use delay to defer execution up until the very last step
                    (let [deps (gensym->deps gensym)]
                      (if (empty? deps)
                        (when (dep? gensym)
-                         [gensym val])
+                         [gensym `(delay ~val)])
                        [gensym
-                        `(->> [(all ~@deps :executor ~custom-ex)]
-                              (apply (fn [[~@(map gensym->var deps)]]
-                                       ~val)))])))
+                        ;; ensure all delay'ed deps are resolved
+                        `(delay (->> [(all (deref ~@deps))] ;; ::executor/executor ~custom-ex
+                                     (apply (fn [[~@(map gensym->var deps)]]
+                                              ~val))))])))
                  (range)
                  vars'
                  vals'
                  gensyms)]
-         (->> [(all ~@body-dep? :executor ~custom-ex)]
+
+         ;; ensure all delay'ed deps are resolved
+         (->> [(all ~@(for [d body-dep?] `@~d) #_~@body-dep?)] ;; ::executor/executor ~custom-ex
               (apply (fn [[~@(map gensym->var body-dep?)]]
                        ~@body)))))))
 
-(defmacro dag
-  "Constructs a DAG of let-bindings and executes it"
-  [bindings & body]
-  (expand-let-flow
-    bindings
-    body))
 
+(defmacro schedule
+  "Sequences a DAG of let-bindings and executes it"
+  [bindings & body]
+  (expand-let-flow bindings body))
+
+
+(defn whoami []
+  (let [n (.getName (Thread/currentThread))]
+    (println n)
+    n))
 
 (time
-  (dag [a (task=> (Thread/sleep 100) (+ 1 1))
-        b (do     (Thread/sleep 100) 2)
-        c (task=> (println "c" (whom-am-i)) (+ 1 a))]
-       (+ a b b)))
+  (schedule [a (task=> (Thread/sleep 100) (+ 1 1))
+             b (task=> (Thread/sleep 100) 2)
+             c (any (Thread/sleep 10)
+                    (Thread/sleep 10)
+                    1)]
+            [a b c]))
+;; 100ms because a and b can be run independently
 
-(walk/macroexpand '(dag [a (task=> (Thread/sleep 100) (+ 1 1))
-                         b (do  (Thread/sleep 100) 2)
-                         c (task=> (println "c" (whom-am-i)) (+ 1 a))]
-                        (+ a b)))
+(defn log [steps]
+  (dotimes [i steps]
+    (Thread/sleep ^long (rand-int 100))
+    (println (str (.getName (Thread/currentThread)) "Hello: " i)))
+  steps)
+
+(race (log 10)
+      (log 9))
+
+(parallel
+  (fn [] (whoami) :first)
+  :second
+  (constantly 3)
+  (task (whoami))
+  (task nil)
+  (do :do)
+  (task=> (whoami) (+ 1 2)))
