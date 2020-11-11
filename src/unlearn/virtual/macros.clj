@@ -38,9 +38,9 @@
   ([body]
    (split-tasks-opts body {}))
   ([body curr-opts]
-   (let [deadline? (= ::executor/deadline (first body))
+   (let [deadline? (= :deadline (first body))
          deadline  (when deadline? (nth body 1))
-         executor? (= ::executor/executor (first body))
+         executor? (= :executor (first body))
          executor  (when executor? (nth body 1))
          ex-opts   (cond-> curr-opts
                            deadline? (merge {:deadline deadline})
@@ -52,7 +52,7 @@
        [tasks (merge curr-opts ex-opts)]
        (split-tasks-opts tasks ex-opts)))))
 
-;; (split-tasks-opts '(::executor/executor 2  ::executor/deadline 1 (+ 1 1)))
+;; (split-tasks-opts '(:executor 2  :deadline 1 (+ 1 1)))
 ;; [((+ 1 1)) {:executor 2, :deadline 1}]
 
 
@@ -66,8 +66,9 @@
           (->> (.invokeAll e# tasks#)
                (mapv #(.get %))))))))
 
+
 (comment
-  (macroexpand-1 '(parallel ::executor/executor x (+ 1 1))))
+  (macroexpand-1 '(parallel :executor x (+ 1 1))))
 
 (defmacro race
   "Runs each form within its own virtual thread, returning the first to finish"
@@ -102,6 +103,8 @@
 (defn- expand-let [bindings [body] ex-opts]
 
   (let [block-symbol (if (:executor ex-opts) 'let 'with-open)
+        flattened-opts (-> (into [] ex-opts) flatten)
+
         [_ bindings & body] (walk/macroexpand-all `(let ~bindings ~body))
         locals       (keys (compiler/locals))
         vars         (->> bindings (partition 2) (map first))
@@ -146,7 +149,7 @@
                          [gensym `(delay ~val)])
                        [gensym
                         ;; ensure all delay'ed deps are resolved
-                        `(delay (->> [(parallel (deref ~@deps))] ;; ::executor/executor ~custom-ex
+                        `(delay (->> [(parallel ~@flattened-opts (deref ~@deps))] ;; :executor ~custom-ex
                                      (apply (fn [[~@(map gensym->var deps)]]
                                               ~val))))])))
                  (range)
@@ -155,7 +158,7 @@
                  gensyms)]
 
          ;; ensure all delay'ed deps are resolved
-         (->> [(parallel ~@(for [d body-dep?] `@~d) #_~@body-dep?)] ;; ::executor/executor ~custom-ex
+         (->> [(parallel ~@flattened-opts ~@(for [d body-dep?] `@~d) #_~@body-dep?)] ;; :executor ~custom-ex
               (apply (fn [[~@(map gensym->var body-dep?)]]
                        ~@body)))))))
 
@@ -176,11 +179,11 @@
     n))
 
 (time
-  (schedule ::executor/executor 1 [a (task=> (Thread/sleep 100) (+ 1 1))
-                                   b (task=> (Thread/sleep 100) 2)
-                                   c (race (Thread/sleep 10)
-                                           (Thread/sleep 10)
-                                           1)]
+  (schedule [a (task=> (Thread/sleep 100) (+ 1 1))
+             b (task=> (Thread/sleep 100) 2)
+             c (race (Thread/sleep 10)
+                     (Thread/sleep 10)
+                     1)]
             [a b c]))
 
 ;; 100ms because a and b can be run independently
