@@ -42,7 +42,6 @@
          deadline  (when deadline? (nth body 1))
          executor? (= ::executor/executor (first body))
          executor  (when executor? (nth body 1))
-
          ex-opts   (cond-> curr-opts
                            deadline? (merge {:deadline deadline})
                            executor? (merge {:executor executor}))
@@ -56,30 +55,35 @@
 ;; (split-tasks-opts '(::executor/executor 2  ::executor/deadline 1 (+ 1 1)))
 ;; [((+ 1 1)) {:executor 2, :deadline 1}]
 
+
 (defmacro parallel
   "Runs each form within its own virtual thread."
   ([& body]
-   (let [[tasks ex-opts] (split-tasks-opts body)]
+   (let [[tasks ex-opts] (split-tasks-opts body)
+         block-symbol (if (:executor ex-opts) 'let 'with-open)]
      `(let [tasks# ~(tasks-of tasks)]
-        (with-open [^ExecutorService e# (executor/executor ~ex-opts)] ;; TODO use with-open
+        (~block-symbol [^ExecutorService e# (executor/executor ~ex-opts)]
           (->> (.invokeAll e# tasks#)
                (mapv #(.get %))))))))
 
-(macroexpand-1 '(all ::executor/executor x (+ 1 1)))
+(comment
+  (macroexpand-1 '(parallel ::executor/executor x (+ 1 1))))
 
 (defmacro race
   "Runs each form within its own virtual thread, returning the first to finish"
   ([& body]
-   (let [[tasks ex-opts] (split-tasks-opts body)]
+   (let [[tasks ex-opts] (split-tasks-opts body)
+         block-symbol (if (:executor ex-opts) 'let 'with-open)]
      `(let [tasks# ~(tasks-of tasks)]
-        (with-open [^ExecutorService e# (executor/executor ~ex-opts)] ;; TODO use with-open
+        (~block-symbol [^ExecutorService e# (executor/executor ~ex-opts)]
           (.invokeAny e# tasks#))))))
 
 (defmacro task
   "Runs a single form in its own virtual thread."
   [& body]
-  (let [[task ex-opts] (split-tasks-opts body)]
-    `(with-open [^ExecutorService e# (executor/executor ~ex-opts)] ;; TODO use with-open
+  (let [[task ex-opts] (split-tasks-opts body)
+        block-symbol (if (:executor ex-opts) 'let 'with-open)]
+    `(~block-symbol [^ExecutorService e# (executor/executor ~ex-opts)]
        @(.submitTask e# (cast Callable (^:once fn [] (run-task ~@task)))))))
 
 ;; shamelessly copied from manifold.deferred/back-references
@@ -95,8 +99,9 @@
 
 
 ;; shamelessly copied from manifold.deferred/expand-let-flow
-(defn- expand-let-flow [bindings orig-body]
-  (let [[body ex-opts] orig-body
+(defn- expand-let [bindings [body] ex-opts]
+
+  (let [block-symbol (if (:executor ex-opts) 'let 'with-open)
         [_ bindings & body] (walk/macroexpand-all `(let ~bindings ~body))
         locals       (keys (compiler/locals))
         vars         (->> bindings (partition 2) (map first))
@@ -131,7 +136,7 @@
                           (concat (drop (count vars) gensyms))
                           set)
         dep?         (set/union binding-dep? body-dep?)]
-    `(with-open [~custom-ex (executor/executor ~ex-opts)]
+    `(~block-symbol [~custom-ex (executor/executor ~ex-opts)]
        (let [~@(mapcat
                  (fn [n var val gensym]
                    ;; use delay to defer execution up until the very last step
@@ -141,7 +146,7 @@
                          [gensym `(delay ~val)])
                        [gensym
                         ;; ensure all delay'ed deps are resolved
-                        `(delay (->> [(all (deref ~@deps))] ;; ::executor/executor ~custom-ex
+                        `(delay (->> [(parallel (deref ~@deps))] ;; ::executor/executor ~custom-ex
                                      (apply (fn [[~@(map gensym->var deps)]]
                                               ~val))))])))
                  (range)
@@ -150,16 +155,20 @@
                  gensyms)]
 
          ;; ensure all delay'ed deps are resolved
-         (->> [(all ~@(for [d body-dep?] `@~d) #_~@body-dep?)] ;; ::executor/executor ~custom-ex
+         (->> [(parallel ~@(for [d body-dep?] `@~d) #_~@body-dep?)] ;; ::executor/executor ~custom-ex
               (apply (fn [[~@(map gensym->var body-dep?)]]
                        ~@body)))))))
 
 
 (defmacro schedule
   "Sequences a DAG of let-bindings and executes it"
-  [bindings & body]
-  (expand-let-flow bindings body))
+  [& body]
+  (let [[tasks ex-opts] (split-tasks-opts body)
+        [bindings & bbody] tasks]
+    (expand-let bindings bbody ex-opts)))
 
+;;;
+;; examples
 
 (defn whoami []
   (let [n (.getName (Thread/currentThread))]
@@ -167,12 +176,13 @@
     n))
 
 (time
-  (schedule [a (task=> (Thread/sleep 100) (+ 1 1))
-             b (task=> (Thread/sleep 100) 2)
-             c (any (Thread/sleep 10)
-                    (Thread/sleep 10)
-                    1)]
+  (schedule ::executor/executor 1 [a (task=> (Thread/sleep 100) (+ 1 1))
+                                   b (task=> (Thread/sleep 100) 2)
+                                   c (race (Thread/sleep 10)
+                                           (Thread/sleep 10)
+                                           1)]
             [a b c]))
+
 ;; 100ms because a and b can be run independently
 
 (defn log [steps]
