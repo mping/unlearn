@@ -1,0 +1,4 @@
+{:lint-as {unlearn.virtual.macros/schedule clojure.core/let}
+ :linters {:unresolved-symbol {:exclude []}
+           :unused-binding    {:exclude-destructured-keys-in-fn-args true
+                               :exclude-unused-as                    true}}}

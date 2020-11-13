@@ -9,21 +9,22 @@
 ;;;;
 ;; public stuff
 
-(defprotocol ITask (run-task [this]))
+(defprotocol ITask
+  (run-task [this]))
 
 (extend-protocol ITask
   ;; sets, maps and keywords implement ifn? which means they would be
   ;; treated as tasks but they always need an argument
-  Fn (run-task [f] (f))
+  Fn     (run-task [f] (f))
   Object (run-task [f] f)
-  nil (run-task [_] nil))
+  nil    (run-task [_] nil))
 
-(defmacro task=>
+(defmacro task
   "Creates a task out of a body"
   [& body]
   ;; memoization allows a task to be called several times and just like a deferred,
   ;; only return the success value
-  `(memoize (fn ^:once [] ~@body)))
+  `(memoize (fn [] (do ~@body))))
 
 ;;;;
 ;; macro helpers
@@ -31,7 +32,7 @@
 (defn- tasks-of
   "Helper fn for `with-executor` macro"
   [bindings]
-  (mapv (fn [binding] `(^:once fn [] (run-task ~binding)))
+  (mapv (fn [binding] `(fn [] (run-task ~binding)))
         bindings))
 
 (defn- split-tasks-opts
@@ -66,10 +67,6 @@
           (->> (.invokeAll e# tasks#)
                (mapv #(.get %))))))))
 
-
-(comment
-  (macroexpand-1 '(parallel :executor x (+ 1 1))))
-
 (defmacro race
   "Runs each form within its own virtual thread, returning the first to finish"
   ([& body]
@@ -78,14 +75,6 @@
      `(let [tasks# ~(tasks-of tasks)]
         (~block-symbol [^ExecutorService e# (executor/executor ~ex-opts)]
           (.invokeAny e# tasks#))))))
-
-(defmacro task
-  "Runs a single form in its own virtual thread."
-  [& body]
-  (let [[task ex-opts] (split-tasks-opts body)
-        block-symbol (if (:executor ex-opts) 'let 'with-open)]
-    `(~block-symbol [^ExecutorService e# (executor/executor ~ex-opts)]
-       @(.submitTask e# (cast Callable (^:once fn [] (run-task ~@task)))))))
 
 ;; shamelessly copied from manifold.deferred/back-references
 (defn- back-references [marker form]
@@ -141,7 +130,7 @@
         dep?         (set/union binding-dep? body-dep?)]
     `(~block-symbol [~custom-ex (executor/executor ~ex-opts)]
        (let [~@(mapcat
-                 (fn [n var val gensym]
+                 (fn [_n _var val gensym]
                    ;; use delay to defer execution up until the very last step
                    (let [deps (gensym->deps gensym)]
                      (if (empty? deps)
@@ -169,39 +158,3 @@
   (let [[tasks ex-opts] (split-tasks-opts body)
         [bindings & bbody] tasks]
     (expand-let bindings bbody ex-opts)))
-
-;;;
-;; examples
-
-(defn whoami []
-  (let [n (.getName (Thread/currentThread))]
-    (println n)
-    n))
-
-(time
-  (schedule [a (task=> (Thread/sleep 100) (+ 1 1))
-             b (task=> (Thread/sleep 100) 2)
-             c (race (Thread/sleep 10)
-                     (Thread/sleep 10)
-                     1)]
-            [a b c]))
-
-;; 100ms because a and b can be run independently
-
-(defn log [steps]
-  (dotimes [i steps]
-    (Thread/sleep ^long (rand-int 100))
-    (println (str (.getName (Thread/currentThread)) "Hello: " i)))
-  steps)
-
-(race (log 10)
-      (log 9))
-
-(parallel
-  (fn [] (whoami) :first)
-  :second
-  (constantly 3)
-  (task (whoami))
-  (task nil)
-  (do :do)
-  (task=> (whoami) (+ 1 2)))

@@ -1,6 +1,5 @@
-(ns unlearn.server
+(ns unlearn.demo.servers
   (:require [ring.adapter.jetty9 :refer [run-jetty]]
-            [unlearn.virtual.executor :as executor]
             [unlearn.virtual.jetty :as jetty]
             [aleph.http :as http]
             [clojure.java.jdbc :as j]

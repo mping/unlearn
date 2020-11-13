@@ -1,8 +1,6 @@
 (ns unlearn.virtual.executor
   (:require [clojure.tools.logging :as log])
-  (:import (java.util.concurrent ExecutorService Executors TimeUnit)
-           (org.eclipse.jetty.util.component AbstractLifeCycle)
-           (org.eclipse.jetty.util.thread ThreadPool QueuedThreadPool)
+  (:import (java.util.concurrent ExecutorService Executors)
            (java.time Instant)))
 
 (declare global-uncaught-exception-handler)
@@ -46,7 +44,6 @@
 (def ^:private global-uncaught-exception-handler
   (reify Thread$UncaughtExceptionHandler
     (^void uncaughtException [_ ^Thread t ^Throwable ex]
-      (println "ERROR" t ex)
       (log/error ex "Uncaught exception on" (.getName t)))))
 
 (defn set-default-uncaught-exception-handler! []

@@ -23,7 +23,7 @@
 
 (defn pmap
   "Like pmap, but using virtual threads"
-  [f coll {:keys [deadline] :as opts}]
+  [f coll {:keys [deadline] :as _opts}]
   (with-open [^ExecutorService e (executor/executor (when deadline {:deadline deadline}))]
     (let [tasks (into [] (map (fn [el] (^:once fn [] (f el))) coll))
           tasks (.submitTasks e tasks)]
@@ -101,4 +101,4 @@
         (single :deadline (.. (Instant/now) (plusSeconds 1))
                 (do (Thread/sleep 1500)
                     :try))
-        (catch InterruptedException e :deadline-1000ms)))))
+        (catch InterruptedException _e :deadline-1000ms)))))
