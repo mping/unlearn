@@ -1,6 +1,6 @@
 (ns unlearn.virtual.executor
   (:require [clojure.tools.logging :as log])
-  (:import (java.util.concurrent ExecutorService Executors)
+  (:import (java.util.concurrent ExecutorService Executors Future)
            (java.time Instant)))
 
 (declare global-uncaught-exception-handler)
@@ -27,9 +27,13 @@
    ;; exceptions are not propagated to uncaght handler, see
    ;; https://stackoverflow.com/questions/2248131/handling-exceptions-from-java-executorservice-tasks
    (let [ex (or executor (Executors/newThreadExecutor thread-factory))]
-     ex
      (cond-> ex
              (some? deadline) (.withDeadline deadline)))))
+
+(defn ^Future submit
+  "Reflection-friendly executor submit"
+  [executor callable]
+  (.submit ^ExecutorService executor ^Callable callable))
 
 ;;;;
 ;; override clojure defaults

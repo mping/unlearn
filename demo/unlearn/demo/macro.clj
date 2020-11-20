@@ -1,6 +1,9 @@
 (ns unlearn.demo.macro
-  (:require [unlearn.virtual.macros :as m])
-  (:import (java.time Instant Duration)))
+  (:require [unlearn.virtual.macros :as m]
+            [unlearn.virtual.executor :as e])
+  (:import (java.time Instant Duration)
+           (java.util.concurrent ExecutorService Executors)
+           (clojure.lang IDeref)))
 
 ;;;
 ;; examples
@@ -31,7 +34,8 @@
   ;(task2));; error
 
 ;; task bodies work as closures
-(let [v 1
+;; capturing enclosing values
+(let [v    1
       task (m/task + 1 v)]
   (task))
 
@@ -51,11 +55,9 @@
 ;; if there is a dependency it works too
 ;; so the result of the b task will depend on a completion
 (time
-  (m/schedule [a (m/task (Thread/sleep 100) (+ 1 1))
-               b (m/task (Thread/sleep 100) (+ 1 a))
-               c (m/race (Thread/sleep 150))]
-              [a b c]))
-
+  (m/schedule [a (m/task (println "start a") (Thread/sleep 100) 2)
+               b (m/task (println "start b") (Thread/sleep 100) (+ 1 a))]
+              [a b]))
 
 ;; race between these two fn calls
 ;; sometimes result is 10, sometimes 9
@@ -77,13 +79,48 @@
 ;; all macros accept a custom executor and a deadline
 ;; structured concurrency ;)
 (time
-  (m/parallel ;; creates an executor for all m/ calls
+  (m/parallel :deadline (deadline-in 1) ;; creates an executor for all m/ calls
+    ;1
     (m/task (Thread/sleep 100) :100ms)
+    ;2
     (m/race
       (do (Thread/sleep 300) :300ms)
       (do (Thread/sleep 400) :400ms))
+    ;3
     (try
       (m/task
         (do (Thread/sleep 1500)
             :try-ok))
       (catch InterruptedException _e :try-failed))))
+
+
+;; https://github.com/flatland/useful/blob/5de8a2ff32d351dcc931d0d10cdd4d67797bdc42/src/flatland/useful/utils.clj#L201
+(defn thread-local*
+  "Non-macro version of thread-local - see documentation for same."
+  [init]
+  (let [generator (proxy [ThreadLocal] []
+                    (initialValue [] (init)))]
+    (reify IDeref
+      (deref [this]
+        (.get generator)))))
+
+(defmacro thread-local
+  [& body]
+  `(thread-local* (fn [] ~@body)))
+
+(def current-executor (thread-local (atom nil)))
+
+(defn h [] (println "HASH:" (.hashCode @@current-executor)))
+
+(let [ve (unlearn.virtual.executor/executor)]
+  (reset! @current-executor ve)
+  (h)
+  (with-open [ex @@current-executor]
+    (h)
+    (.submit ex
+             (cast Callable
+                   (fn []
+                     (let [ve2 (unlearn.virtual.executor/executor)]
+                       (reset! @current-executor ve2)
+                       (with-open [ex2 @@current-executor]
+                         (h))))))))
