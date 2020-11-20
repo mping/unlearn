@@ -10,9 +10,9 @@
             [reitit.ring.middleware.exception :as exception]
             [reitit.ring.middleware.multipart :as multipart]
             [reitit.ring.middleware.parameters :as parameters]
-    ;       [reitit.ring.middleware.dev :as dev]
-    ;       [reitit.ring.spec :as spec]
-    ;       [spec-tools.spell :as spell]
+            [reitit.ring.middleware.dev :as dev]
+            [reitit.ring.spec :as spec]
+            [spec-tools.spell :as spell]
             [ring.adapter.jetty9 :refer [run-jetty]]
             [unlearn.virtual.jetty :as vjetty]
             [muuntaja.core :as m]
@@ -69,9 +69,10 @@
                             {:status 200
                              :body {:total (+ x y)}})}}]]]
 
-      {;;:reitit.middleware/transform dev/print-request-diffs ;; pretty diffs
-       ;;:validate spec/validate ;; enable spec validation for route data
-       ;;:reitit.spec/wrap spell/closed ;; strict top-level validation
+      {:reitit.middleware/transform dev/print-request-diffs ;; pretty diffs
+       :validate spec/validate ;; enable spec validation for route data
+       :reitit.spec/wrap spell/closed ;; strict top-level validation
+
        :exception pretty/exception
        :data {:coercion (reitit.coercion.malli/create
                           {;; set of keys to include in error messages

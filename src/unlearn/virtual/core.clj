@@ -66,39 +66,3 @@
   (let [[task ex-opts] (split-tasks-opts body)]
     `(with-open [^ExecutorService e# (executor/executor ~ex-opts)]
        @(.submitTask e# (cast Callable (^:once fn [] (do ~@task)))))))
-
-
-(comment
-  ;; should be 100ms, but is 200ms - single is blocking call
-  (time
-    (let [a (single (Thread/sleep 100) :100ms)
-          b (single (Thread/sleep 100) :100ms)]
-      [a b]))
-
-  ;; if they are independent, should be parallel
-  (time
-    (all
-      (do (Thread/sleep 100) :100ms)
-      (do (Thread/sleep 100) :100ms)))
-
-  ;; if they are dependent, should be nested
-  (time
-    (single
-      ;; the (single... call will block until a result is ready
-      (let [waiting-for (single (Thread/sleep 100) 1)]
-        (Thread/sleep 100)
-        (+ 1 waiting-for))))
-
-  ;; structured concurrency ;)
-  (time
-    (all
-      (single
-        (Thread/sleep 100) :100ms)
-      (any
-        (do (Thread/sleep 300) :300ms)
-        (do (Thread/sleep 400) :400ms))
-      (try
-        (single :deadline (.. (Instant/now) (plusSeconds 1))
-                (do (Thread/sleep 1500)
-                    :try))
-        (catch InterruptedException _e :deadline-1000ms)))))

@@ -49,6 +49,7 @@
          tasks     (if (or deadline? executor?)
                      (rest (rest body))
                      body)]
+     (println ">>>" ex-opts)
      (if (not (or deadline? executor?))
        [tasks (merge curr-opts ex-opts)]
        (split-tasks-opts tasks ex-opts)))))
@@ -56,6 +57,9 @@
 ;; (split-tasks-opts '(:executor 2  :deadline 1 (+ 1 1)))
 ;; [((+ 1 1)) {:executor 2, :deadline 1}]
 
+;; TODO use a generic (with-executor ex-opts ...) macro
+;; TODO ensure that if :deadline is present, the macro needs to create a new executor even if
+;; one is supplied
 
 (defmacro parallel
   "Runs each form within its own virtual thread."
@@ -90,7 +94,6 @@
 
 ;; shamelessly copied from manifold.deferred/expand-let-flow
 (defn- expand-let [bindings [body] ex-opts]
-
   (let [block-symbol (if (:executor ex-opts) 'let 'with-open)
         flattened-opts (-> (into [] ex-opts) flatten)
 
