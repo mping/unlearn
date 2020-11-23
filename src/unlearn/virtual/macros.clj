@@ -1,26 +1,57 @@
 (ns unlearn.virtual.macros
+  "Highly experimental namespace for running code in threads.
+  Use at your own peril.
+  All thread executing fns accept either `:deadline` or `:executor` opts."
+  (:refer-clojure :exclude [sequence])
   (:require [clojure.set :as set]
             [unlearn.virtual.executor :as executor]
             [riddley.walk :as walk]
             [riddley.compiler :as compiler])
   (:import (java.util.concurrent ExecutorService)
-           (clojure.lang Fn)))
+           (clojure.lang Fn IDeref)))
 
 ;;;;
 ;; current executor
+;; defines a threadlocal executor that will be passed down onto new threads
+;; unless a new binding is set
 ;;;;
 
-(def ^{:dynamic true :private true :tag ExecutorService} *executor* nil)
+;; https://github.com/flatland/useful/blob/5de8a2ff32d351dcc931d0d10cdd4d67797bdc42/src/flatland/useful/utils.clj#L201
+(defn- thread-local* [init]
+  (let [generator (proxy [ThreadLocal] []
+                    (initialValue [] (init)))]
+    (reify IDeref
+      (deref [this]
+        (.get generator)))))
+
+(defmacro ^:private thread-local [& body]
+  `(thread-local* (fn [] ~@body)))
+
+(def ^ExecutorService current-thread-executor (thread-local (atom nil)))
+
+(defn set-local-executor [ex]
+  (reset! @current-thread-executor ex))
 
 (defn- decide-executor [{:keys [executor deadline] :as opts}]
   (cond (and executor deadline)
         (throw (IllegalArgumentException. "Cannot have both :executor and :deadline"))
         (some? executor) executor
-        (some? deadline) `(executor/executor ~opts)))
+        :else `(executor/executor ~opts)))
 
-(defmacro ^:private with-executor [opts & body]
-  `(with-bindings {*executor* ~(decide-executor opts)}
-     (do ~@body)))
+(defmacro -with-threadlocal-executor
+  "Wraps body with the current executor or a new one, depending on supplied opts.
+  Binds the current executor to `binding`"
+  [[binding ex-opts] & body]
+  (let [new-executor? (contains? ex-opts :deadline)]
+    (if new-executor?
+      `(with-open [~binding ~(decide-executor ex-opts)]
+         ;; force e# to be used in the body
+         (set-local-executor ~binding)
+         ~@body)
+      `(let [~binding ~(decide-executor ex-opts)]
+         ;; force e# to be used in the body
+         (set-local-executor ~binding)
+         ~@body))))
 
 ;;;;
 ;; public stuff
@@ -44,7 +75,7 @@
 ;; macro helpers
 
 (defn- tasks-of
-  "Helper fn for `with-executor` macro"
+  "Helper fn for `-with-threadlocal-executor` macro"
   [bindings]
   (mapv (fn [binding] `(fn [] (run-task ~binding)))
         bindings))
@@ -70,28 +101,29 @@
 ;; (split-tasks-opts '(:executor 2  :deadline 1 (+ 1 1)))
 ;; [((+ 1 1)) {:executor 2, :deadline 1}]
 
-;; TODO use a generic (with-executor ex-opts ...) macro
-;; TODO ensure that if :deadline is present, the macro needs to create a new executor even if
-;; one is supplied
-
 (defmacro parallel
   "Runs each form within its own virtual thread."
   ([& body]
-   (let [[tasks ex-opts] (split-tasks-opts body)
-         block-symbol (if (:executor ex-opts) 'let 'with-open)]
+   (let [[tasks ex-opts] (split-tasks-opts body)]
      `(let [tasks# ~(tasks-of tasks)]
-        (~block-symbol [^ExecutorService e# (executor/executor ~ex-opts)]
+        (-with-threadlocal-executor [e# ~ex-opts]
           (->> (.invokeAll e# tasks#)
                (mapv #(.get %))))))))
 
 (defmacro race
   "Runs each form within its own virtual thread, returning the first to finish"
   ([& body]
-   (let [[tasks ex-opts] (split-tasks-opts body)
-         block-symbol (if (:executor ex-opts) 'let 'with-open)]
+   (let [[tasks ex-opts] (split-tasks-opts body)]
      `(let [tasks# ~(tasks-of tasks)]
-        (~block-symbol [^ExecutorService e# (executor/executor ~ex-opts)]
+        (-with-threadlocal-executor [e# ~ex-opts]
           (.invokeAny e# tasks#))))))
+
+(defmacro single
+  "Runs a form within its own virtual thread, returning the first to finish"
+  ([& body]
+   (let [[tasks ex-opts] (split-tasks-opts body)]
+     `(-with-threadlocal-executor [e# ~ex-opts]
+        (.get (executor/submit e# (fn [] ~@tasks)))))))
 
 ;; shamelessly copied from manifold.deferred/back-references
 (defn- back-references [marker form]
@@ -104,13 +136,9 @@
       form)
     @syms))
 
-
 ;; shamelessly copied from manifold.deferred/expand-let-flow
 (defn- expand-let [bindings [body] ex-opts]
-  (let [block-symbol   (if (:executor ex-opts) 'let 'with-open)
-        flattened-opts (-> (into [] ex-opts) flatten)
-
-        [_ bindings & body] (walk/macroexpand-all `(let ~bindings ~body))
+  (let [[_ bindings & body] (walk/macroexpand-all `(let ~bindings ~body))
         locals         (keys (compiler/locals))
         vars           (->> bindings (partition 2) (map first))
         custom-ex      (gensym "custom-executor")
@@ -144,7 +172,7 @@
                             (concat (drop (count vars) gensyms))
                             set)
         dep?           (set/union binding-dep? body-dep?)]
-    `(~block-symbol [~custom-ex (executor/executor ~ex-opts)]
+    `(-with-threadlocal-executor [~custom-ex ~ex-opts]
        (let [~@(mapcat
                  (fn [_n _var val gensym]
                    ;; use delay to defer execution up until the very last step
@@ -164,13 +192,13 @@
                  vals'
                  gensyms)]
 
-         ;; ensure all delay'ed deps are resolved
-         ;; :executor ~custom-ex
+         ;; destructure from an array of resolved vars
+         ;; to run the body
          (let [[~@(map gensym->var body-dep?)] [~@(for [d body-dep?] `@~d)]]
            ~@body)))))
 
-(defmacro schedule
-  "Sequences a DAG of let-bindings and executes it"
+(defmacro sequence
+  "Sequences a set of let-bindings and executes the bindings."
   [& body]
   (let [[tasks ex-opts] (split-tasks-opts body)
         [bindings & bbody] tasks]

@@ -41,7 +41,8 @@
 (defn set-core-agent-executors-virtual!
   "Overrides the clojure.core agent executors to use the `base-executor`."
   []
-  (let [executor (executor)]
+  (let [factory  (thread-factory {:prefix "clojure-agent-send-off-virtual-pool"})
+        executor (executor {:thread-factory factory})]
     (set-agent-send-executor! executor)
     (set-agent-send-off-executor! executor)))
 
@@ -52,3 +53,7 @@
 
 (defn set-default-uncaught-exception-handler! []
   (Thread/setDefaultUncaughtExceptionHandler global-uncaught-exception-handler))
+
+(comment
+  (set-core-agent-executors-virtual!)
+  (future (println (.getName (Thread/currentThread)) (/ 1 0))))

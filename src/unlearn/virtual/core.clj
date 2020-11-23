@@ -3,7 +3,6 @@
   (:require [unlearn.virtual.executor :as executor]
             [manifold.deferred])
   (:import (java.util.concurrent ExecutorService CompletableFuture)
-           (java.time Instant)
            (java.util Collection)))
 
 ;;;;

@@ -5,13 +5,13 @@
             [clojure.java.jdbc :as j]
             [manifold.deferred :as d]))
 
-(def mysql-db {:dbtype "mysql"
-               :dbname "test"
-               :user "test"
+(def mysql-db {:dbtype   "mysql"
+               :dbname   "test"
+               :user     "test"
                :password "test"})
 
 ;; while :; do docker-compose exec mysql mysql -uroot -proot -Dtest -e 'SHOW STATUS WHERE variable_name LIKE "Threads_%" OR variable_name = "Connections"'; sleep 1; done
-;; set global max_connections=1000;
+;; docker-compose exec  mysql mysql -uroot -proot -Dtest -e "set global max_connections=1000"
 (def counter (atom 0))
 
 (defn periodically
@@ -25,7 +25,7 @@
     (.start)))
 
 (comment
-  (def printer (periodically (fn []  (println (str "inflight: " @counter))) 1000))
+  (def printer (periodically (fn [] (println (str "inflight: " @counter))) 1000))
   (reset! counter 0)
   (.interrupt printer))
 
@@ -39,7 +39,7 @@
     (finally
       (swap! counter dec))))
 
-(defn- mhandler [req]
+(defn- handler-deferred [req]
   (swap! counter inc)
   (-> (d/chain (d/future
                  (j/query mysql-db ["select sleep(?)" (rand-int 10)]))
@@ -48,19 +48,19 @@
                   :headers {"Content-Type" "text/html"}
                   :body    r}))
       (d/finally
-        (fn []  (swap! counter dec)))))
+        (fn [] (swap! counter dec)))))
 
 (defn start-loom [p]
-  (run-jetty #'handler {:port p
-                        :join? false
+  (run-jetty #'handler {:port        p
+                        :join?       false
                         :thread-pool (jetty/thread-pool {:stop-timeout 10})}))
 
 (defn start-plain [p]
-  (run-jetty #'handler {:port p
+  (run-jetty #'handler {:port  p
                         :join? false}))
 
 (defn start-aleph [p]
-  (http/start-server #'mhandler  {:port p}))
+  (http/start-server #'handler-deferred {:port p}))
 
 (comment
   ;; wrk -t12 -c400 -d30s http://127.0.0.1:808{0,1,2}

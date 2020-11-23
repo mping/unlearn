@@ -1,4 +1,5 @@
-{:lint-as {unlearn.virtual.macros/schedule clojure.core/let}
+{:lint-as {unlearn.virtual.macros/schedule                   clojure.core/let
+           unlearn.virtual.macros/-with-threadlocal-executor clojure.core/let}
  :linters {:unresolved-symbol {:exclude []}
            :unused-binding    {:exclude-destructured-keys-in-fn-args true
                                :exclude-unused-as                    true}}}
