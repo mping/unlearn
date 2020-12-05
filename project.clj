@@ -15,7 +15,7 @@
                                   [info.sunng/ring-jetty9-adapter "0.12.8"]
 
                                   ;; reitit+malli
-                                  [metosin/jsonista "0.2.6"]
+                                  [metosin/jsonista "0.2.7"]
                                   [metosin/reitit "0.5.10"]
 
                                   ;; io

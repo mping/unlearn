@@ -2,8 +2,13 @@
   (:require [ring.adapter.jetty9 :refer [run-jetty]]
             [unlearn.virtual.jetty :as jetty]
             [aleph.http :as http]
-            [clojure.java.jdbc :as j]
-            [manifold.deferred :as d]))
+            [clojure.java.jdbc :as jdbc]
+            [manifold.deferred :as d]
+            [reitit.ring :as ring]
+            [reitit.ring.middleware.exception :as exception]
+            [reitit.ring.middleware.muuntaja :as muuntaja]
+            [muuntaja.core :as m]
+            [jsonista.core :as j]))
 
 (def mysql-db {:dbtype   "mysql"
                :dbname   "test"
@@ -12,55 +17,66 @@
 
 ;; while :; do docker-compose exec mysql mysql -uroot -proot -Dtest -e 'SHOW STATUS WHERE variable_name LIKE "Threads_%" OR variable_name = "Connections"'; sleep 1; done
 ;; docker-compose exec  mysql mysql -uroot -proot -Dtest -e "set global max_connections=1000"
-(def counter (atom 0))
 
-(defn periodically
-  [f interval]
-  (doto (Thread.
-          #(try
-             (while (not (.isInterrupted (Thread/currentThread)))
-               (Thread/sleep interval)
-               (f))
-             (catch InterruptedException _)))
-    (.start)))
+;;;;
+;; APP
 
-(comment
-  (def printer (periodically (fn [] (println (str "inflight: " @counter))) 1000))
-  (reset! counter 0)
-  (.interrupt printer))
+(defn run-query [db]
+  (-> (jdbc/query db ["select sleep(FLOOR(RAND()*10)) as s"])
+      (j/write-value-as-bytes)))
+
+(defn ok [_] {:status 200 :body ""})
+
+(defn query [_]
+  {:status  200
+   :headers {"Content-Type" "text/html"}
+   :body    (run-query mysql-db)})
+
+(defn count-request-manifold [_]
+  (d/chain (d/future
+             (run-query mysql-db))
+           (fn [r]
+             {:status  200
+              :headers {"Content-Type" "text/html"}
+              :body    r})))
+
+(def exception-middleware
+  (exception/create-exception-middleware
+    (merge
+      exception/default-handlers
+      {::exception/wrap (fn [handler e request]
+                          (println "ERROR" (pr-str (:uri request)) e)
+                          (handler e request))})))
+
+(def app
+  (ring/ring-handler
+    (ring/router
+      [["/baseline" {:get {:handler ok}}]
+       ["/" {:get {:handler query}}]]
+      {:data {:muuntaja   m/instance
+              :middleware [exception-middleware
+                           muuntaja/format-middleware]}})))
 
 
-(defn- handler [request]
-  (swap! counter inc)
-  (try
-    {:status  200
-     :headers {"Content-Type" "text/html"}
-     :body    (j/query mysql-db ["select sleep(?)" (rand-int 10)])}
-    (finally
-      (swap! counter dec))))
+(def app-manifold
+  (ring/ring-handler
+    (ring/router
+      [["/baseline" {:get {:handler ok}}]
+       ["/" {:get {:handler count-request-manifold}}]])))
 
-(defn- handler-deferred [req]
-  (swap! counter inc)
-  (-> (d/chain (d/future
-                 (j/query mysql-db ["select sleep(?)" (rand-int 10)]))
-               (fn [r]
-                 {:status  200
-                  :headers {"Content-Type" "text/html"}
-                  :body    r}))
-      (d/finally
-        (fn [] (swap! counter dec)))))
 
 (defn start-loom [p]
-  (run-jetty #'handler {:port        p
-                        :join?       false
-                        :thread-pool (jetty/thread-pool {:stop-timeout 10})}))
+  (run-jetty #'app {:port        p
+                    :join?       false
+                    :thread-pool (jetty/thread-pool {:stop-timeout 10})}))
 
 (defn start-plain [p]
-  (run-jetty #'handler {:port  p
-                        :join? false}))
+  (run-jetty #'app {:port  p
+                    :join? false}))
 
 (defn start-aleph [p]
-  (http/start-server #'handler-deferred {:port p}))
+  ;; aleph knows how to handle deferreds
+  (http/start-server #'app-manifold {:port p}))
 
 (comment
   ;; wrk -t12 -c400 -d30s http://127.0.0.1:808{0,1,2}

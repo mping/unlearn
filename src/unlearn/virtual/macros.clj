@@ -7,7 +7,7 @@
             [unlearn.virtual.executor :as executor]
             [riddley.walk :as walk]
             [riddley.compiler :as compiler])
-  (:import (java.util.concurrent ExecutorService)
+  (:import (java.util.concurrent ExecutorService CompletableFuture)
            (clojure.lang Fn IDeref)))
 
 ;;;;
@@ -45,13 +45,24 @@
   (let [new-executor? (contains? ex-opts :deadline)]
     (if new-executor?
       `(with-open [~binding ~(decide-executor ex-opts)]
-         ;; force e# to be used in the body
          (set-local-executor ~binding)
          ~@body)
       `(let [~binding ~(decide-executor ex-opts)]
-         ;; force e# to be used in the body
          (set-local-executor ~binding)
          ~@body))))
+
+
+(defn ^CompletableFuture submit
+  "Reflection-friendly executor submit"
+  [executor callable]
+  (.submitTask ^ExecutorService executor ^Callable callable))
+
+
+(defn ^CompletableFuture submit-many
+  "Reflection-friendly executor submit"
+  [executor callable]
+  (.submitTasks ^ExecutorService executor ^Callable callable))
+
 
 ;;;;
 ;; public stuff
@@ -107,7 +118,7 @@
    (let [[tasks ex-opts] (split-tasks-opts body)]
      `(let [tasks# ~(tasks-of tasks)]
         (-with-threadlocal-executor [e# ~ex-opts]
-          (->> (.invokeAll e# tasks#)
+          (->> (submit-many e# tasks#)
                (mapv #(.get %))))))))
 
 (defmacro race
@@ -123,7 +134,7 @@
   ([& body]
    (let [[tasks ex-opts] (split-tasks-opts body)]
      `(-with-threadlocal-executor [e# ~ex-opts]
-        (.get (executor/submit e# (fn [] ~@tasks)))))))
+        (.get (submit e# (fn [] ~@tasks)))))))
 
 ;; shamelessly copied from manifold.deferred/back-references
 (defn- back-references [marker form]
@@ -179,14 +190,14 @@
                    (let [deps (gensym->deps gensym)]
                      (if (empty? deps)
                        (when (dep? gensym)
-                         [gensym `(executor/submit ~custom-ex (fn [] (run-task ~val)))])
+                         [gensym `(submit ~custom-ex (fn [] (run-task ~val)))])
                        [gensym
-                        `(executor/submit ~custom-ex ;; :executor ~custom-ex
-                                          (fn []
-                                            (apply (fn [[~@(map gensym->var deps)]]
-                                                     ;; TODO: because val is a task
-                                                     (run-task ~val))
-                                                   [[~@(for [d deps] `@~d)]])))])))
+                        `(submit ~custom-ex ;; :executor ~custom-ex
+                                 (fn []
+                                   (apply (fn [[~@(map gensym->var deps)]]
+                                            ;; TODO: because val is a task
+                                            (run-task ~val))
+                                          [[~@(for [d deps] `@~d)]])))])))
                  (range)
                  vars'
                  vals'

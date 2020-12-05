@@ -1,21 +1,26 @@
 (ns unlearn.virtual.executor
   (:require [clojure.tools.logging :as log])
-  (:import (java.util.concurrent ExecutorService Executors Future)
+  (:import (java.util.concurrent ExecutorService Executors ThreadFactory)
            (java.time Instant)))
 
 (declare global-uncaught-exception-handler)
+
 (defn thread-factory
   "Makes a virtual thread factory"
   ([]
    (thread-factory nil))
-  ([{:keys [prefix exception-handler ^ExecutorService scheduler]
+  ([{:keys [prefix exception-handler ^ExecutorService scheduler thread-locals? daemon?]
      :or   {prefix            "unlearn.virtual"
-            exception-handler global-uncaught-exception-handler}}]
+            exception-handler global-uncaught-exception-handler
+            thread-locals?    true
+            daemon?           true}}]
    (let [builder (Thread/builder)]
      (-> (if scheduler
            (.virtual builder scheduler)
            (.virtual builder))
          (.name prefix 0)
+         (.daemon daemon?)
+         (.inheritThreadLocals) ;; todo check thread-locals? to call .disallowThreadLocals
          (.uncaughtExceptionHandler exception-handler)
          (.factory)))))
 
@@ -30,16 +35,11 @@
      (cond-> ex
              (some? deadline) (.withDeadline deadline)))))
 
-(defn ^Future submit
-  "Reflection-friendly executor submit"
-  [executor callable]
-  (.submit ^ExecutorService executor ^Callable callable))
-
 ;;;;
 ;; override clojure defaults
 
 (defn set-core-agent-executors-virtual!
-  "Overrides the clojure.core agent executors to use the `base-executor`."
+  "Overrides the clojure.core agent executors to use a virtual executor."
   []
   (let [factory  (thread-factory {:prefix "clojure-agent-send-off-virtual-pool"})
         executor (executor {:thread-factory factory})]

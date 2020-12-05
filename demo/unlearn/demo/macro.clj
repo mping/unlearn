@@ -1,6 +1,7 @@
 (ns unlearn.demo.macro
   (:require [unlearn.virtual.macros :as m])
-  (:import (java.time Instant Duration)))
+  (:import (java.time Instant Duration)
+           (java.util.concurrent ArrayBlockingQueue)))
 
 ;;;
 ;; examples
@@ -47,7 +48,7 @@
                b (m/task (Thread/sleep 100) 2)
                c (m/race (Thread/sleep 10)
                          (Thread/sleep 10)
-                         1)]
+                         a)]
               [a b c])) ;; ~100ms
 
 ;; if there is a dependency it works too
@@ -90,3 +91,4 @@
         (do (Thread/sleep 1500)
             :try-ok))
       (catch InterruptedException _e :try-failed))))
+
